@@ -21,7 +21,7 @@ function createBot() {
     console.log('--- 🛡️ 正在以管理员身份同步至 Minecraft 服务器 ---');
     
     bot = mineflayer.createBot({
-        host: 'kingdomascendants164.mcsh.io',
+        host: '163.5.201.2',
         port: 11087,
         username: 'russ', // 锁死白名单 ID
         version: '1.21.11',
