@@ -24,11 +24,13 @@ server.listen(PORT, () => {
 let bot;
 let jumpInterval;
 let clearItemInterval;
+let spawnTimeout;
 
 // 清理定时任务，防止重连时发生内存溢出和动作混乱
 function stopTasks() {
     if (jumpInterval) clearInterval(jumpInterval);
     if (clearItemInterval) clearInterval(clearItemInterval);
+    if (spawnTimeout) clearTimeout(spawnTimeout);
 }
 
 function createBot() {
@@ -43,30 +45,32 @@ function createBot() {
         checkTimeoutInterval: 60 * 1000 // 提高网络容错
     });
 
-    // --- 登录成功后的初始化 ---
     bot.on('spawn', () => {
         console.log('✅ KeepAliveBot 已上线！正在执行高权限初始化...');
+        isReconnecting = false; // 成功上线后，解锁重连状态
 
-        // 利用 OP 权限执行三位一体保活策略
-        bot.chat('/gamemode creative');
-        bot.chat('/tp 0 80 0');
-        bot.chat('/difficulty peaceful');
-        console.log('🛡️ 环境初始化完成：创造模式 + 安全坐标 + 和平模式');
+        // 延迟 3 秒执行指令，防止刚进服时区块未加载导致坠落虚空
+        spawnTimeout = setTimeout(() => {
+            if (!bot) return;
+            bot.chat('/gamemode creative');
+            bot.chat('/tp 0 80 0');
+            bot.chat('/difficulty peaceful');
+            console.log('🛡️ 环境初始化完成：创造模式 + 安全坐标 + 和平模式');
+        }, 3000);
 
-        // 启动行为定时任务
-        stopTasks(); // 确保启动前没有残留的定时器
+        stopTasks(); 
         
-        // 行为保活逻辑：每 4 分钟跳跃一次
+        // 行为保活逻辑：每 4 分钟跳跃一次（完美契合 7 分钟休眠限制）
         jumpInterval = setInterval(() => {
             if (bot && bot.entity) {
                 bot.setControlState('jump', true);
                 setTimeout(() => {
                     if (bot) bot.setControlState('jump', false);
                 }, 500);
+                console.log('🚶 执行防休眠动作：跳跃');
             }
         }, 4 * 60 * 1000);
 
-        // 自动清理逻辑：每 1 小时清理一次掉落物
         clearItemInterval = setInterval(() => {
             if (bot) {
                 bot.chat('/kill @e[type=item]');
@@ -75,7 +79,6 @@ function createBot() {
         }, 60 * 60 * 1000);
     });
 
-    // --- 死亡处理 ---
     bot.on('death', () => {
         console.log('⚠️ 检测到角色异常死亡，正在执行复活协议...');
         setTimeout(() => {
@@ -83,16 +86,28 @@ function createBot() {
         }, 2000);
     });
 
-    // --- 自动愈合重连模块 ---
+    // --- 带有防抖锁的自动重连模块 ---
+    let isReconnecting = false; 
+
     const reconnect = (reason) => {
-        console.log(`⚠️ 连接断开 [原因: ${reason}]，30秒后尝试系统自愈...`);
-        stopTasks(); // 断开时立即停止定时任务
+        if (isReconnecting) return; // 如果已经在重连中了，就拦截多余的报错请求
+        isReconnecting = true;
+
+        console.log(`⚠️ 连接断开 [原因: ${reason}]`);
+        stopTasks(); 
+        
         if (bot) {
             try { bot.quit(); } catch (e) {}
             bot = null;
         }
-        // 延迟 30 秒重连，给服务器留出清理“假死”账号的时间
-        setTimeout(createBot, 30000);
+
+        // 【关键修改】：将冷却时间拉长到 60 秒。
+        // 服务器需要 7 分钟才关机，离开 1 分钟绝对安全，且能彻底洗掉假死残留的 UUID。
+        console.log('⏳ 60秒后尝试系统自愈...');
+        setTimeout(() => {
+            isReconnecting = false; // 准备开始新一轮重连前解锁
+            createBot();
+        }, 60000); 
     };
 
     bot.on('kicked', (reason) => reconnect(`被踢出游戏: ${JSON.stringify(reason)}`));
@@ -102,15 +117,14 @@ function createBot() {
 
 /**
  * ==========================================
- * 3. 生命周期管理与防顶号机制 (Render 专供)
+ * 3. 生命周期管理 (Render 专供)
  * ==========================================
  */
 
-// 启动缓冲：容器启动后，延迟 10 秒再登录，避开旧容器还没死透的重叠期
-console.log('⏳ 容器已启动，等待 10 秒后连接服务器以防顶号...');
-setTimeout(createBot, 10000);
+// 【关键修改】：启动缓冲拉长到 30 秒，彻底避开云端部署时新老代码交替的碰撞期
+console.log('⏳ 容器已启动，等待 30 秒后连接服务器以防顶号...');
+setTimeout(createBot, 30000);
 
-// 优雅停机：拦截 Render 的关闭信号，主动让机器人下线
 const gracefulShutdown = (signal) => {
     console.log(`\n🛑 接收到系统关闭信号 [${signal}]，正在执行安全下线程序...`);
     stopTasks();
@@ -125,6 +139,5 @@ const gracefulShutdown = (signal) => {
     process.exit(0);
 };
 
-// 监听云平台的进程终止信号
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM')); // Render 的部署/休眠信号
-process.on('SIGINT', () => gracefulShutdown('SIGINT'));   // 本地强制停止信号
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
