@@ -37,8 +37,8 @@ function createBot() {
     console.log('--- 🛡️ 正在以管理员身份同步至 Minecraft 服务器 ---');
     
     bot = mineflayer.createBot({
-        host: '163.5.201.7',
-        port: 11650,
+        host: '163.5.201.5',
+        port: 12190,
         username: 'russ', // 锁死白名单 ID
         version: '1.21.11',
         auth: 'offline',
