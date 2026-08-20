@@ -3,141 +3,548 @@ const http = require('http');
 
 /**
  * ==========================================
- * 1. HTTP 心跳服务 (Render 保活)
+ * 1. HTTP 服务
  * ==========================================
  */
+
 const server = http.createServer((req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-    res.end('KeepAliveBot 系统状态：管理员模式已激活\n当前状态：持续保活中...');
+    res.writeHead(200, {
+        'Content-Type': 'text/plain; charset=utf-8'
+    });
+
+    res.end(
+        'KeepAliveBot 系统状态：管理员模式已激活\n' +
+        '当前状态：持续保活中...'
+    );
 });
 
 const PORT = process.env.PORT || 3000;
+
 server.listen(PORT, () => {
-    console.log(`✅ HTTP 唤醒接口已就绪，端口: ${PORT}`);
+    console.log(`✅ HTTP 服务已启动，端口: ${PORT}`);
 });
 
+
 /**
  * ==========================================
- * 2. 机器人核心逻辑
+ * 2. 多账号配置
  * ==========================================
+ *
+ * 每个账号可以连接不同的 Minecraft 服务器。
  */
-let bot;
-let jumpInterval;
-let clearItemInterval;
-let spawnTimeout;
 
-// 清理定时任务，防止重连时发生内存溢出和动作混乱
-function stopTasks() {
-    if (jumpInterval) clearInterval(jumpInterval);
-    if (clearItemInterval) clearInterval(clearItemInterval);
-    if (spawnTimeout) clearTimeout(spawnTimeout);
-}
-
-function createBot() {
-    console.log('--- 🛡️ 正在以管理员身份同步至 Minecraft 服务器 ---');
-    
-    bot = mineflayer.createBot({
+const accounts = [
+    {
+        name: 'russ',
         host: '144.31.46.17',
         port: 11691,
-        username: 'russ', // 锁死白名单 ID
-        version: '1.21.11',
-        auth: 'offline',
-        checkTimeoutInterval: 60 * 1000 // 提高网络容错
-    });
+        username: 'russ'
+    },
 
-    bot.on('spawn', () => {
-        console.log('✅ KeepAliveBot 已上线！正在执行高权限初始化...');
-        isReconnecting = false; // 成功上线后，解锁重连状态
+    {
+        name: 'rose',
+        host: '163.5.201.10',
+        port: 11218,
+        username: 'rose'
+    }
+];
 
-        // 延迟 3 秒执行指令，防止刚进服时区块未加载导致坠落虚空
-        spawnTimeout = setTimeout(() => {
-            if (!bot) return;
-            bot.chat('/gamemode creative');
-            bot.chat('/tp 0 80 0');
-            bot.chat('/difficulty peaceful');
-            console.log('🛡️ 环境初始化完成：创造模式 + 安全坐标 + 和平模式');
-        }, 3000);
-
-        stopTasks(); 
-        
-        // 行为保活逻辑：每 4 分钟跳跃一次（完美契合 7 分钟休眠限制）
-        jumpInterval = setInterval(() => {
-            if (bot && bot.entity) {
-                bot.setControlState('jump', true);
-                setTimeout(() => {
-                    if (bot) bot.setControlState('jump', false);
-                }, 500);
-                console.log('🚶 执行防休眠动作：跳跃');
-            }
-        }, 4 * 60 * 1000);
-
-        clearItemInterval = setInterval(() => {
-            if (bot) {
-                bot.chat('/kill @e[type=item]');
-                console.log('🧹 已自动清理全服地面掉落物');
-            }
-        }, 60 * 60 * 1000);
-    });
-
-    bot.on('death', () => {
-        console.log('⚠️ 检测到角色异常死亡，正在执行复活协议...');
-        setTimeout(() => {
-            if (bot && bot.respawn) bot.respawn();
-        }, 2000);
-    });
-
-    // --- 带有防抖锁的自动重连模块 ---
-    let isReconnecting = false; 
-
-    const reconnect = (reason) => {
-        if (isReconnecting) return; // 如果已经在重连中了，就拦截多余的报错请求
-        isReconnecting = true;
-
-        console.log(`⚠️ 连接断开 [原因: ${reason}]`);
-        stopTasks(); 
-        
-        if (bot) {
-            try { bot.quit(); } catch (e) {}
-            bot = null;
-        }
-
-        // 【关键修改】：将冷却时间拉长到 60 秒。
-        // 服务器需要 7 分钟才关机，离开 1 分钟绝对安全，且能彻底洗掉假死残留的 UUID。
-        console.log('⏳ 60秒后尝试系统自愈...');
-        setTimeout(() => {
-            isReconnecting = false; // 准备开始新一轮重连前解锁
-            createBot();
-        }, 60000); 
-    };
-
-    bot.on('kicked', (reason) => reconnect(`被踢出游戏: ${JSON.stringify(reason)}`));
-    bot.on('end', () => reconnect('网络链路终止'));
-    bot.on('error', (err) => reconnect(`网络错误: ${err.message}`));
-}
 
 /**
  * ==========================================
- * 3. 生命周期管理 (Render 专供)
+ * 3. Bot 管理器
  * ==========================================
  */
 
-// 【关键修改】：启动缓冲拉长到 30 秒，彻底避开云端部署时新老代码交替的碰撞期
-console.log('⏳ 容器已启动，等待 30 秒后连接服务器以防顶号...');
-setTimeout(createBot, 30000);
+const bots = new Map();
 
-const gracefulShutdown = (signal) => {
-    console.log(`\n🛑 接收到系统关闭信号 [${signal}]，正在执行安全下线程序...`);
-    stopTasks();
-    if (bot) {
-        try {
-            bot.quit();
-            console.log('✅ 机器人已安全断开连接');
-        } catch (e) {
-            console.log('⚠️ 机器人断开发生错误:', e.message);
+
+class MinecraftBot {
+
+    constructor(config) {
+        this.name = config.name;
+        this.host = config.host;
+        this.port = config.port;
+        this.username = config.username;
+
+        this.bot = null;
+
+        this.jumpInterval = null;
+        this.clearItemInterval = null;
+        this.spawnTimeout = null;
+        this.reconnectTimeout = null;
+
+        this.isReconnecting = false;
+        this.isShuttingDown = false;
+    }
+
+
+    /**
+     * 清理所有定时任务
+     */
+    stopTasks() {
+
+        if (this.jumpInterval) {
+            clearInterval(this.jumpInterval);
+            this.jumpInterval = null;
+        }
+
+        if (this.clearItemInterval) {
+            clearInterval(this.clearItemInterval);
+            this.clearItemInterval = null;
+        }
+
+        if (this.spawnTimeout) {
+            clearTimeout(this.spawnTimeout);
+            this.spawnTimeout = null;
+        }
+
+        if (this.reconnectTimeout) {
+            clearTimeout(this.reconnectTimeout);
+            this.reconnectTimeout = null;
         }
     }
-    process.exit(0);
+
+
+    /**
+     * 创建 Bot
+     */
+    create() {
+
+        if (this.isShuttingDown) {
+            return;
+        }
+
+        console.log('');
+        console.log('==========================================');
+        console.log(`🛡️ 正在启动账号: ${this.username}`);
+        console.log(`🌐 服务器: ${this.host}:${this.port}`);
+        console.log('==========================================');
+
+        try {
+
+            this.bot = mineflayer.createBot({
+
+                host: this.host,
+                port: this.port,
+
+                username: this.username,
+
+                version: '1.21.11',
+
+                auth: 'offline',
+
+                checkTimeoutInterval: 60 * 1000
+
+            });
+
+        } catch (err) {
+
+            console.log(
+                `❌ [${this.username}] 创建 Bot 失败:`,
+                err.message
+            );
+
+            this.scheduleReconnect('创建 Bot 失败');
+
+            return;
+        }
+
+
+        /**
+         * ==========================================
+         * Bot 上线
+         * ==========================================
+         */
+
+        this.bot.on('spawn', () => {
+
+            console.log(
+                `✅ [${this.username}] 已成功进入 Minecraft！`
+            );
+
+            this.isReconnecting = false;
+
+
+            /**
+             * 延迟 3 秒执行初始化指令
+             */
+
+            this.spawnTimeout = setTimeout(() => {
+
+                if (!this.bot || !this.bot.entity) {
+                    return;
+                }
+
+                try {
+
+                    this.bot.chat('/gamemode creative');
+
+                    this.bot.chat('/tp 0 80 0');
+
+                    this.bot.chat('/difficulty peaceful');
+
+                    console.log(
+                        `🛡️ [${this.username}] 环境初始化完成`
+                    );
+
+                } catch (err) {
+
+                    console.log(
+                        `⚠️ [${this.username}] 初始化指令失败:`,
+                        err.message
+                    );
+                }
+
+            }, 3000);
+
+
+            /**
+             * ==========================================
+             * 每 4 分钟跳跃一次
+             * ==========================================
+             */
+
+            this.jumpInterval = setInterval(() => {
+
+                if (
+                    this.bot &&
+                    this.bot.entity &&
+                    !this.isReconnecting
+                ) {
+
+                    try {
+
+                        this.bot.setControlState('jump', true);
+
+                        setTimeout(() => {
+
+                            if (this.bot) {
+                                this.bot.setControlState('jump', false);
+                            }
+
+                        }, 500);
+
+                        console.log(
+                            `🚶 [${this.username}] 执行防休眠动作：跳跃`
+                        );
+
+                    } catch (err) {
+
+                        console.log(
+                            `⚠️ [${this.username}] 跳跃失败:`,
+                            err.message
+                        );
+                    }
+                }
+
+            }, 4 * 60 * 1000);
+
+
+            /**
+             * ==========================================
+             * 每小时清理掉落物
+             * ==========================================
+             */
+
+            this.clearItemInterval = setInterval(() => {
+
+                if (
+                    this.bot &&
+                    this.bot.entity &&
+                    !this.isReconnecting
+                ) {
+
+                    try {
+
+                        this.bot.chat('/kill @e[type=item]');
+
+                        console.log(
+                            `🧹 [${this.username}] 已执行掉落物清理`
+                        );
+
+                    } catch (err) {
+
+                        console.log(
+                            `⚠️ [${this.username}] 清理掉落物失败:`,
+                            err.message
+                        );
+                    }
+                }
+
+            }, 60 * 60 * 1000);
+
+        });
+
+
+        /**
+         * ==========================================
+         * 死亡自动复活
+         * ==========================================
+         */
+
+        this.bot.on('death', () => {
+
+            console.log(
+                `💀 [${this.username}] 角色死亡，2 秒后尝试复活`
+            );
+
+            setTimeout(() => {
+
+                if (this.bot && this.bot.respawn) {
+
+                    try {
+                        this.bot.respawn();
+                    } catch (err) {
+
+                        console.log(
+                            `⚠️ [${this.username}] 复活失败:`,
+                            err.message
+                        );
+                    }
+                }
+
+            }, 2000);
+
+        });
+
+
+        /**
+         * ==========================================
+         * 被踢
+         * ==========================================
+         */
+
+        this.bot.on('kicked', (reason) => {
+
+            this.reconnect(
+                `被服务器踢出: ${JSON.stringify(reason)}`
+            );
+
+        });
+
+
+        /**
+         * ==========================================
+         * 网络连接结束
+         * ==========================================
+         */
+
+        this.bot.on('end', () => {
+
+            this.reconnect('网络连接终止');
+
+        });
+
+
+        /**
+         * ==========================================
+         * 网络错误
+         * ==========================================
+         */
+
+        this.bot.on('error', (err) => {
+
+            this.reconnect(
+                `网络错误: ${err.message}`
+            );
+
+        });
+
+    }
+
+
+    /**
+     * ==========================================
+     * 重连
+     * ==========================================
+     */
+
+    reconnect(reason) {
+
+        if (this.isReconnecting || this.isShuttingDown) {
+            return;
+        }
+
+        this.isReconnecting = true;
+
+        console.log('');
+        console.log(
+            `⚠️ [${this.username}] 连接断开`
+        );
+
+        console.log(
+            `原因: ${reason}`
+        );
+
+
+        this.stopTasks();
+
+
+        if (this.bot) {
+
+            try {
+                this.bot.removeAllListeners();
+                this.bot.quit();
+            } catch (e) {}
+
+            this.bot = null;
+        }
+
+
+        console.log(
+            `⏳ [${this.username}] 60 秒后自动重连...`
+        );
+
+
+        this.reconnectTimeout = setTimeout(() => {
+
+            if (this.isShuttingDown) {
+                return;
+            }
+
+            this.isReconnecting = false;
+
+            this.create();
+
+        }, 60 * 1000);
+
+    }
+
+
+    /**
+     * 安排重连
+     */
+
+    scheduleReconnect(reason) {
+
+        if (this.isReconnecting || this.isShuttingDown) {
+            return;
+        }
+
+        this.isReconnecting = true;
+
+        console.log(
+            `⏳ [${this.username}] 60 秒后重新连接...`
+        );
+
+        this.reconnectTimeout = setTimeout(() => {
+
+            this.isReconnecting = false;
+
+            this.create();
+
+        }, 60 * 1000);
+
+    }
+
+
+    /**
+     * 安全关闭
+     */
+
+    shutdown() {
+
+        this.isShuttingDown = true;
+
+        this.stopTasks();
+
+        if (this.bot) {
+
+            try {
+
+                this.bot.quit();
+
+                console.log(
+                    `✅ [${this.username}] 已安全退出`
+                );
+
+            } catch (err) {
+
+                console.log(
+                    `⚠️ [${this.username}] 退出时发生错误:`,
+                    err.message
+                );
+            }
+
+            this.bot = null;
+        }
+    }
+}
+
+
+/**
+ * ==========================================
+ * 4. 启动所有账号
+ * ==========================================
+ *
+ * 不让所有账号同时登录。
+ * 每个账号间隔 10 秒。
+ */
+
+accounts.forEach((config, index) => {
+
+    const bot = new MinecraftBot(config);
+
+    bots.set(config.name, bot);
+
+    const delay = 30 * 1000 + index * 10 * 1000;
+
+    console.log(
+        `⏳ [${config.username}] 将在 ${delay / 1000} 秒后启动`
+    );
+
+    setTimeout(() => {
+
+        bot.create();
+
+    }, delay);
+
+});
+
+
+/**
+ * ==========================================
+ * 5. Render / 系统关闭处理
+ * ==========================================
+ */
+
+const gracefulShutdown = (signal) => {
+
+    console.log('');
+    console.log(
+        `🛑 接收到系统关闭信号: ${signal}`
+    );
+
+    console.log(
+        '正在安全关闭所有 Minecraft Bot...'
+    );
+
+
+    for (const bot of bots.values()) {
+        bot.shutdown();
+    }
+
+
+    server.close(() => {
+
+        console.log('✅ HTTP 服务已关闭');
+
+        process.exit(0);
+
+    });
+
+
+    setTimeout(() => {
+        process.exit(0);
+    }, 5000);
 };
 
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+process.on('SIGTERM', () => {
+    gracefulShutdown('SIGTERM');
+});
+
+process.on('SIGINT', () => {
+    gracefulShutdown('SIGINT');
+});
