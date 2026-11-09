@@ -87,13 +87,13 @@ const accounts = [
         host: '15.204.102.206',
         port: 13423,
         username: 'russ'
-    },
-    {
-        name: 'rose',
-        host: '57.128.141.201',
-        port: 13628,
-        username: 'rose'
-    }
+    }//,
+    //{
+        //name: 'rose',
+        //host: '57.128.141.201',
+        //port: 13628,
+        //username: 'rose'
+    //}
 ];
 
 /**
