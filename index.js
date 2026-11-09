@@ -230,7 +230,7 @@ app.get("/", (req, res) => {
                     <button onclick="openAppCenter()" class="glass border border-white/10 px-5 py-2.5 rounded-2xl text-sm font-bold text-slate-300 hover:text-white hover:border-white/20 transition-all flex items-center gap-2 shadow-lg"><span class="text-lg">🚀</span> 应用中心</button>
                 </div>
                 <div class="glass p-2 rounded-2xl flex gap-2 w-full md:w-auto border border-white/10">
-                    <input id="h" placeholder="57.128.141.201:13628" class="input-dark rounded-xl px-4 py-2.5 text-sm text-white flex-1 md:w-48">
+                    <input id="h" placeholder="IP:端口" class="input-dark rounded-xl px-4 py-2.5 text-sm text-white flex-1 md:w-48">
                     <input id="u" placeholder="rose" class="input-dark rounded-xl px-4 py-2.5 text-sm text-white md:w-36">
                     <button onclick="addBot()" class="btn-primary text-white px-6 py-2.5 rounded-xl text-sm font-bold active:scale-95">部署角色</button>
                 </div>
