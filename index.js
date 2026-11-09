@@ -77,8 +77,8 @@ const accounts = [
     //},
     {
         name: 'rose',
-        host: '57.129.18.215',
-        port: 12493,
+        host: '57.128.141.201',
+        port: 13628,
         username: 'rose'
     }
 ];
