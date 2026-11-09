@@ -16,7 +16,7 @@ const CONFIG = {
     WATCHDOG_CHECK_INTERVAL: 5 * 1000,   // 看门狗轮询检查频率 (毫秒)
 
     // 重连控制
-    RECONNECT_DELAY: 60 * 1000,          // 断线重连等待冷却 (毫秒)
+    RECONNECT_DELAY: 15 * 1000,          // 断线重连等待冷却 (毫秒)
     RECONNECT_DEBOUNCE: 5 * 1000,        // 重连防抖间隔，防止短时并发触发 (毫秒)
 
     // 进服初始化
