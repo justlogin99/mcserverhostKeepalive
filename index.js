@@ -31,6 +31,13 @@ const CONFIG = {
     JUMP_INTERVAL: 4 * 60 * 1000,        // 跳跃防挂机周期 (毫秒)
     JUMP_PRESS_DURATION: 500,            // 跳跃按键保持时长 (毫秒)
 
+    // 随机走动（带避障）
+    MOVE_INTERVAL: 8 * 1000,             // 每隔多久尝试走一次 (毫秒)
+    MOVE_MAX_TIME: 3000,                 // 单次最多走多久 (毫秒)
+    WANDER_CENTER_X: 0,                  // 活动中心 X（应与 /tp 坐标对应）
+    WANDER_CENTER_Z: 0,                  // 活动中心 Z
+    WANDER_RADIUS: 15,                   // 活动半径 (格)
+
     // 定时清理掉落物
     CLEAR_INTERVAL: 60 * 60 * 1000,      // 掉落物清理周期 (毫秒)
     CLEAR_COMMAND: '/kill @e[type=item]',
@@ -42,6 +49,12 @@ const CONFIG = {
     START_INITIAL_DELAY: 30 * 1000,      // 首个账号启动等待延迟 (毫秒)
     START_STAGGER_DELAY: 10 * 1000       // 每个账号递增错峰延迟 (毫秒)
 };
+
+// 走动时视为危险的方块（名称包含即判定）
+const DANGEROUS_BLOCKS = [
+    'lava', 'water', 'fire', 'cactus', 'magma_block',
+    'sweet_berry_bush', 'cobweb', 'powder_snow', 'campfire', 'wither_rose'
+];
 
 /**
  * ==========================================
@@ -102,21 +115,38 @@ class MinecraftBot {
         // 定时器引用句柄
         this.jumpInterval = null;
         this.clearItemInterval = null;
+        this.moveInterval = null;
         this.spawnTimeout = null;
         this.reconnectTimeout = null;
         this.watchdogInterval = null;
+        this.walkTimer = null;
 
         // 状态监控
         this.lastPacketTime = 0;
         this.isReconnecting = false;
         this.isShuttingDown = false;
         this.lastReconnectTime = 0;
+        this.walking = false;
     }
 
     /**
-     * 彻底重置并注销所有运行中的定时器
+     * 停止走动并松开前进键
      */
-    stopTasks() {
+    stopWalking() {
+        if (this.walkTimer) {
+            clearTimeout(this.walkTimer);
+            this.walkTimer = null;
+        }
+        this.walking = false;
+        if (this.bot) {
+            try { this.bot.setControlState('forward', false); } catch (e) {}
+        }
+    }
+
+    /**
+     * 清理游戏内周期任务（不含重连定时器）
+     */
+    stopGameTasks() {
         if (this.jumpInterval) {
             clearInterval(this.jumpInterval);
             this.jumpInterval = null;
@@ -125,18 +155,99 @@ class MinecraftBot {
             clearInterval(this.clearItemInterval);
             this.clearItemInterval = null;
         }
+        if (this.moveInterval) {
+            clearInterval(this.moveInterval);
+            this.moveInterval = null;
+        }
         if (this.spawnTimeout) {
             clearTimeout(this.spawnTimeout);
             this.spawnTimeout = null;
-        }
-        if (this.reconnectTimeout) {
-            clearTimeout(this.reconnectTimeout);
-            this.reconnectTimeout = null;
         }
         if (this.watchdogInterval) {
             clearInterval(this.watchdogInterval);
             this.watchdogInterval = null;
         }
+        this.stopWalking();
+    }
+
+    /**
+     * 彻底重置并注销所有运行中的定时器
+     */
+    stopTasks() {
+        this.stopGameTasks();
+        if (this.reconnectTimeout) {
+            clearTimeout(this.reconnectTimeout);
+            this.reconnectTimeout = null;
+        }
+    }
+
+    /**
+     * 判断朝 (dx, dz) 走一格是否安全
+     */
+    isSafeStep(dx, dz) {
+        if (!this.bot || !this.bot.entity) return false;
+        const base = this.bot.entity.position.floored();
+
+        const ground = this.bot.blockAt(base.offset(dx, -1, dz));
+        const feet = this.bot.blockAt(base.offset(dx, 0, dz));
+        const head = this.bot.blockAt(base.offset(dx, 1, dz));
+        if (!ground || !feet || !head) return false;
+
+        // 脚下必须有实心方块（防掉坑）
+        if (ground.boundingBox !== 'block') return false;
+        // 脚下不能是危险方块
+        if (DANGEROUS_BLOCKS.some((n) => ground.name.includes(n))) return false;
+        // 前方脚部、头部不能有墙
+        if (feet.boundingBox !== 'empty' || head.boundingBox !== 'empty') return false;
+        // 不能走进水/岩浆等
+        if (DANGEROUS_BLOCKS.some((n) => feet.name.includes(n))) return false;
+        if (DANGEROUS_BLOCKS.some((n) => head.name.includes(n))) return false;
+
+        return true;
+    }
+
+    /**
+     * 随机选一个安全方向走一小段
+     */
+    wander() {
+        if (this.walking || !this.bot || !this.bot.entity || this.isReconnecting) return;
+
+        const pos = this.bot.entity.position;
+        const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]].filter(([dx, dz]) => {
+            const nx = pos.x + dx - CONFIG.WANDER_CENTER_X;
+            const nz = pos.z + dz - CONFIG.WANDER_CENTER_Z;
+            return Math.abs(nx) <= CONFIG.WANDER_RADIUS &&
+                   Math.abs(nz) <= CONFIG.WANDER_RADIUS &&
+                   this.isSafeStep(dx, dz);
+        });
+        if (dirs.length === 0) return;
+
+        const [dx, dz] = dirs[Math.floor(Math.random() * dirs.length)];
+        const yaw = Math.atan2(-dx, -dz);
+        this.walking = true;
+
+        this.bot.look(yaw, 0, true).then(() => {
+            if (!this.bot || !this.walking) { this.walking = false; return; }
+            this.bot.setControlState('forward', true);
+            const startTime = Date.now();
+
+            const tick = () => {
+                const p = this.bot && this.bot.entity && this.bot.entity.position;
+                const outOfRange = p && (
+                    Math.abs(p.x - CONFIG.WANDER_CENTER_X) > CONFIG.WANDER_RADIUS ||
+                    Math.abs(p.z - CONFIG.WANDER_CENTER_Z) > CONFIG.WANDER_RADIUS);
+
+                // 超时、断线、前方不安全、超出范围 → 停下
+                if (!this.bot || this.isReconnecting ||
+                    Date.now() - startTime > CONFIG.MOVE_MAX_TIME ||
+                    outOfRange || !this.isSafeStep(dx, dz)) {
+                    this.stopWalking();
+                    return;
+                }
+                this.walkTimer = setTimeout(tick, 100);
+            };
+            tick();
+        }).catch(() => { this.walking = false; });
     }
 
     /**
@@ -196,11 +307,14 @@ class MinecraftBot {
             this.lastPacketTime = Date.now();
         });
 
-        // 进入游戏成功
+        // 进入游戏成功（死亡复活后也会再次触发）
         this.bot.on('spawn', () => {
             console.log(`✅ [${this.username}] 已成功进入 Minecraft！`);
             this.isReconnecting = false;
             this.lastPacketTime = Date.now();
+
+            // 先清掉旧定时器，避免复活后任务叠加
+            this.stopGameTasks();
 
             // 1. 进服指令初始化
             this.spawnTimeout = setTimeout(() => {
@@ -236,7 +350,10 @@ class MinecraftBot {
                 }
             }, CONFIG.JUMP_INTERVAL);
 
-            // 3. 定时清理掉落物
+            // 3. 随机走动（带避障）
+            this.moveInterval = setInterval(() => this.wander(), CONFIG.MOVE_INTERVAL);
+
+            // 4. 定时清理掉落物
             this.clearItemInterval = setInterval(() => {
                 if (this.bot && this.bot.entity && !this.isReconnecting) {
                     try {
@@ -248,7 +365,7 @@ class MinecraftBot {
                 }
             }, CONFIG.CLEAR_INTERVAL);
 
-            // 4. 假死看门狗（替代 TCP 端口探测，防端口扫描拦截）
+            // 5. 假死看门狗（替代 TCP 端口探测，防端口扫描拦截）
             this.watchdogInterval = setInterval(() => {
                 if (this.isShuttingDown || this.isReconnecting) return;
 
@@ -263,6 +380,7 @@ class MinecraftBot {
         // 死亡复活机制
         this.bot.on('death', () => {
             console.log(`💀 [${this.username}] 角色死亡，${CONFIG.RESPAWN_DELAY / 1000} 秒后尝试复活...`);
+            this.stopWalking();
             setTimeout(() => {
                 if (this.bot && this.bot.respawn) {
                     try {
