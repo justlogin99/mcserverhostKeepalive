@@ -69,12 +69,12 @@ server.listen(PORT, () => {
  * ==========================================
  */
 const accounts = [
-    {
-        name: 'russ',
-        host: '144.31.46.17',
-        port: 11691,
-        username: 'russ'
-    },
+    //{
+        //name: 'russ',
+        //host: '144.31.46.17',
+        //port: 11691,
+        //username: 'russ'
+    //},
     {
         name: 'rose',
         host: '57.129.18.215',
